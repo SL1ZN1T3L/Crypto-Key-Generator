@@ -113,11 +113,37 @@ Message/Document → hash_choose_algorithm → hashlib → Markdown Response
 | **Bcrypt** | 4.3.0 | Шифрование passphrase |
 | **Python-dotenv** | 1.1.1 | Загрузка .env |
 
-
+---
 ### Установка через Docker(Рекомендуется)
+
+#### Установить Docker
+Установите Docker, если он ещё не установлен.
 ```bash
-В разработке
+sudo curl -fsSL https://get.docker.com | sh
 ```
+#### Шаг 1. Загрузите необходимые файлы
+Создать каталог проекта:
+```bash
+mkdir /opt/crypto-bot && cd /opt/crypto-bot
+```
+
+Загрузите docker-compose.yml и .env с помощью следующих команд:
+
+```bash
+curl -o docker-compose.yml https://raw.githubusercontent.com/SL1ZN1T3L/Crypto-Key-Generator/refs/heads/main/docker-compose.yml
+```
+```bash
+curl -o .env https://raw.githubusercontent.com/SL1ZN1T3L/Crypto-Key-Generator/refs/heads/main/.env.example
+```
+#### Шаг 2. Настройте файл .env
+* Укажите в файле токен вашего бота
+
+#### Шаг 3. Запустите контейнеры
+Запустите контейнеры, выполнив следующую команду:
+```bash
+docker compose up -d && docker compose logs -f -t
+```
+---
 
 ### Установка через GitHub
 

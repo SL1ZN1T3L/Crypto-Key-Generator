@@ -1,0 +1,19 @@
+services:
+  crypto-bot:
+    image: sl1zn1t3ldev/crypto-bot:stable
+    container_name: crypto-bot
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+    volumes:
+      - ./logs:/app/logs
+      - ./.env:/app/.env
+    healthcheck:
+      test: ["CMD", "pgrep", "-f", "python3 bot.py"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+networks:
+  default:
+    driver: bridge
