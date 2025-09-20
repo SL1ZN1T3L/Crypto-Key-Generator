@@ -1,7 +1,7 @@
 import os
 import asyncio
 import logging
-import shutil
+import sys
 import shlex
 import hashlib
 from typing import Dict, Any, Optional
@@ -24,34 +24,106 @@ LOG_DIR = os.path.join(BOT_DIR, 'logs')
 
 load_dotenv()
 
-LOG_DIR = os.path.join(BOT_DIR, 'logs')
 
-if os.name == 'nt':
-    import sys
-    sys.stdout.reconfigure(encoding='utf-8')
-    sys.stderr.reconfigure(encoding='utf-8')
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.FileHandler(os.path.join(LOG_DIR, 'bot.log'), encoding='utf-8'),
-            logging.StreamHandler(sys.stdout)
-        ],
-        force=True
-    )
-else:
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.FileHandler(os.path.join(LOG_DIR, 'bot.log'), encoding='utf-8'),
-            logging.StreamHandler()
-        ],
-        force=True
-    )
 
+# Создаём базовый logger ДО настройки
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+def setup_logging():
+    """Безопасная настройка логирования"""
+    global logger
+    
+    # Создаём директорию логов, если её нет
+    os.makedirs(LOG_DIR, exist_ok=True)
+    
+    # Определяем путь к файлу лога
+    log_file = os.path.join(LOG_DIR, 'bot.log')
+    
+    # Формат логов
+    log_format = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    
+    # Настройка для Windows
+    if os.name == 'nt':
+        import sys
+        sys.stdout.reconfigure(encoding='utf-8')
+        sys.stderr.reconfigure(encoding='utf-8')
+        
+        # Пытаемся удалить старый файл лога, если он существует
+        if os.path.exists(log_file):
+            try:
+                # Закрываем все открытые FileHandler'ы
+                for handler in logging.root.handlers[:]:
+                    if isinstance(handler, logging.FileHandler):
+                        handler.close()
+                        logging.root.handlers.remove(handler)
+                
+                # Теперь безопасно удаляем
+                if os.path.exists(log_file):
+                    os.remove(log_file)
+                    
+                logger.info("🧹 Старый лог-файл удалён (Windows)")
+            except (PermissionError, OSError) as e:
+                logger.warning(f"⚠️ Не удалось удалить старый лог: {e}")
+        
+        # Настраиваем новый FileHandler
+        file_handler = logging.FileHandler(log_file, encoding='utf-8')
+        file_handler.setFormatter(logging.Formatter(log_format))
+        
+        # Удаляем старые handlers и добавляем новые
+        logging.root.handlers.clear()
+        logging.root.addHandler(file_handler)
+        logging.root.addHandler(logging.StreamHandler(sys.stdout))
+        logging.root.setLevel(logging.INFO)
+        
+    else:
+        # Настройка для Unix/Linux/Mac
+        try:
+            # Пытаемся удалить старый файл лога
+            if os.path.exists(log_file):
+                os.remove(log_file)
+                logger.info("🧹 Старый лог-файл удалён (Unix)")
+        except (PermissionError, OSError) as e:
+            logger.warning(f"⚠️ Не удалось удалить старый лог: {e}")
+        
+        # Настраиваем новый FileHandler
+        file_handler = logging.FileHandler(log_file, encoding='utf-8')
+        file_handler.setFormatter(logging.Formatter(log_format))
+        
+        # Удаляем старые handlers и добавляем новые
+        logging.root.handlers.clear()
+        logging.root.addHandler(file_handler)
+        logging.root.addHandler(logging.StreamHandler())
+        logging.root.setLevel(logging.INFO)
+    
+    # Устанавливаем формат для всех handlers
+    for handler in logging.root.handlers:
+        handler.setFormatter(logging.Formatter(log_format))
+    
+    logger.info("📝 Логирование настроено")
+    return logger
+
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+if not BOT_TOKEN:
+    logger.error("❌ BOT_TOKEN не найден в .env файле!")
+    logger.error("💡 Создайте файл .env в корне проекта с содержимым:")
+    logger.error("   BOT_TOKEN=1234567890:ABCdefGHIjklMNOpqrSTU")
+    logger.error("💡 Шаблон: скопируйте .env.example → .env")
+    logger.error("💡 Получите токен: @BotFather в Telegram")
+    
+    # Для Docker показываем дополнительную инструкцию
+    if os.path.exists('/.dockerenv') or os.getenv('DOCKER_CONTAINER'):
+        logger.error("🐳 DOCKER: Запустите с --env-file .env")
+        logger.error("🐳 Пример: docker run --env-file .env your_image")
+    
+    sys.exit(1)
+
+logger.info(f"✅ BOT_TOKEN успешно загружен (длина: {len(BOT_TOKEN)} символов)")
+logger.info("🔐 Крипто-генератор: инициализация...")
+
+
+# Инициализация логирования
+logger = setup_logging()
 
 PM2_RUNNING = os.getenv('BOT_TYPE') == 'docker-pm2' or 'pm2' in ' '.join(sys.argv).lower()
 
@@ -59,28 +131,31 @@ if PM2_RUNNING:
     logger.info("🚀 PM2 detected - running in production mode")
     os.environ['PYTHONUNBUFFERED'] = '1'
 
+# Проверяем монтирование директории (только для Docker)
 if os.path.ismount(LOG_DIR):
     logger.info("✅ Logs directory is mounted (Docker)")
 else:
-    try:
-        shutil.rmtree(LOG_DIR)
-        os.makedirs(LOG_DIR)
-        logger.info("✅ Local logs directory recreated")
-    except FileNotFoundError:
-        os.makedirs(LOG_DIR)
-        logger.info("✅ Local logs directory created")
+    logger.info("✅ Local logs directory ready")
 
 if PM2_RUNNING:
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.StreamHandler(sys.stdout)
-        ],
-        force=True
-    )
+    # Переконфигурируем логирование для PM2 (только stdout)
+    for handler in logging.root.handlers[:]:
+        if isinstance(handler, logging.FileHandler):
+            try:
+                handler.close()
+                logging.root.handlers.remove(handler)
+            except Exception as e:
+                logger.warning(f"Не удалось закрыть file handler для PM2: {e}")
+    
+    # Добавляем только StreamHandler
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+    
+    logging.root.handlers.clear()
+    logging.root.addHandler(console_handler)
+    logging.root.setLevel(logging.INFO)
+    
     logger.info("📝 PM2 logging configured (stdout only)")
-
 
 
 bot = Bot(token=os.getenv("BOT_TOKEN"))
@@ -211,9 +286,10 @@ async def cmd_help(message: Message, state: FSMContext):
         
         "**🔍 Хеширование:**\n"
         "• Алгоритмы: MD5, SHA-1, SHA-256, SHA-512, BLAKE2b\n"
-        "• Файлы до 50 МБ + любой текст\n"
+        "• *Файлы до 20 МБ* (лимит Bot API) + любой текст\n"
         "• Hex-формат, мгновенный результат\n\n"
-        
+        "⚠️ *Для файлов >20 МБ:* сожмите или используйте онлайн-сервисы\n\n"
+
         "**⚠️ Безопасность:**\n"
         "• Приватные ключи — ваш секрет!\n"
         "• Без секретной фразы = храните как золото\n"
@@ -797,8 +873,11 @@ async def hash_request_input(query: types.CallbackQuery, state: FSMContext):
         f"🔐 *Хеширование {algorithm}*\n\n"
         "Отправьте текст или файл для вычисления хеша:\n\n"
         "**Поддерживается:**\n"
-        "• Текстовые сообщения\n"
-        "• Файлы до 50 МБ\n\n"
+        "• Текстовые сообщения (без лимита)\n"
+        "• *Файлы до 20 МБ* (лимит Bot API)\n\n"
+        "**⚠️ Важно:**\n"
+        "• Файлы >20 МБ: сожмите (zip/7z)\n"
+        "• Файлы старше 24ч: отправьте заново\n\n"
         "*Хеш будет в hex-формате (нижний регистр)*"
     )
     
@@ -820,47 +899,164 @@ async def hash_process_input(message: Message, state: FSMContext):
     algorithm = user_data.get("hash_algorithm", "SHA-256")
     chat_id = user_data.get("chat_id")
     
-    result_msg = await bot.send_message(chat_id, f"*🔄 Вычисляю {algorithm}-хеш...*")
+    result_msg = await bot.send_message(chat_id, f"*🔄 Вычисляю {algorithm}-хеш...*",parse_mode=ParseMode.MARKDOWN)
     
     try:
         if message.document:
-            file = await bot.download_file(message.document.file_id)
-            file_data = file.read()
+            file_size_limit = 20 * 1024 * 1024
+            telegram_upload_limit = 50 * 1024 * 1024
+            
+            if message.document.file_size:
+                file_size_bytes = message.document.file_size
+                
+                if file_size_bytes > file_size_limit:
+                    file_size_mb = file_size_bytes / (1024 * 1024)
+                    await result_msg.edit_text(
+                        f"*❌ Файл слишком большой для бота!*\n\n"
+                        f"📏 Размер: {file_size_mb:.1f} МБ\n"
+                        f"🤖 *Лимит бота:* 20 МБ\n"
+                        f"📱 *Лимит Telegram:* 50 МБ\n\n"
+                        f"*💡 Решения:*\n"
+                        f"• Сожмите файл до <20 МБ\n"
+                        f"• Используйте онлайн-сервисы\n"
+                        f"• Отправьте текст вместо файла\n\n"
+                        f"*⚡ Для текста лимита нет!*",
+                        parse_mode=ParseMode.MARKDOWN
+                    )
+                    return
+                
+                if file_size_bytes > telegram_upload_limit:
+                    await result_msg.edit_text(
+                        f"*❌ Файл превышает лимит Telegram!*\n\n"
+                        f"📏 Размер: {file_size_mb:.1f} МБ\n"
+                        f"📱 *Максимум:* 50 МБ\n\n"
+                        f"*💡 Сожмите файл и отправьте заново*",
+                        parse_mode=ParseMode.MARKDOWN
+                    )
+                    return
+            
             filename = message.document.file_name or "file"
+            file_id = message.document.file_id
             
-            hash_value = calculate_file_hash(file_data, algorithm.lower())
-            
-            await result_msg.edit_text(
-                f"*📎 Хеш файла:* `{filename}`\n\n"
-                f"**{algorithm}:** `{hash_value}`\n\n"
-                f"*📏 Размер:* {len(file_data)} байт\n"
-                f"*⚡ Время:* <1 сек",
-                parse_mode=ParseMode.MARKDOWN
-            )
-            
+            try:
+                file_info = await bot.get_file(file_id)
+                
+                if not file_info.file_path:
+                    raise Exception("File path not available")
+                
+                if file_info.file_size and file_info.file_size > file_size_limit:
+                    file_size_mb = file_info.file_size / (1024 * 1024)
+                    await result_msg.edit_text(
+                        f"*❌ Файл слишком большой!*\n\n"
+                        f"📏 Размер: {file_size_mb:.1f} МБ\n"
+                        f"🤖 *Лимит бота:* 20 МБ\n\n"
+                        f"*💡 Сожмите файл до <20 МБ*",
+                        parse_mode=ParseMode.MARKDOWN
+                    )
+                    return
+                
+                logger.info(f"Скачиваю файл: {filename} ({file_info.file_size} байт)")
+                file = await bot.download_file(file_info.file_path)
+                file_data = file.read()
+                
+                if not file_data:
+                    raise Exception("Файл пустой или не удалось прочитать")
+                
+                hash_value = calculate_file_hash(file_data, algorithm.lower())
+                
+                file_size_formatted = f"{len(file_data):,} байт"
+                if len(file_data) > 1024 * 1024:
+                    file_size_mb = len(file_data) / (1024 * 1024)
+                    file_size_formatted = f"{file_size_mb:.1f} МБ"
+                elif len(file_data) > 1024:
+                    file_size_kb = len(file_data) / 1024
+                    file_size_formatted = f"{file_size_kb:.1f} КБ"
+                
+                await result_msg.edit_text(
+                    f"*📎 Хеш файла:* `{filename}`\n\n"
+                    f"**{algorithm}:** `{hash_value}`\n\n"
+                    f"*📏 Размер:* {file_size_formatted}\n"
+                    f"*✅ Готово!*",
+                    parse_mode=ParseMode.MARKDOWN
+                )
+                
+            except Exception as file_error:
+                logger.error(f"Ошибка работы с файлом {file_id}: {file_error}")
+                error_msg = str(file_error).lower()
+                
+                if "too big" in error_msg or "file is too big" in error_msg:
+                    await result_msg.edit_text(
+                        f"*💥 Ошибка Telegram API:*\n\n"
+                        f"**Файл слишком большой для бота**\n\n"
+                        f"*🤖 Лимит Bot API:* 20 МБ\n"
+                        f"*📱 Лимит клиента:* 50 МБ\n\n"
+                        f"*🔧 Решение:*\n"
+                        f"• Сожмите файл (zip, 7z)\n"
+                        f"• Разделите на части <20 МБ\n"
+                        f"• Используйте текст\n\n"
+                        f"*⚡ Для файлов >20 МБ:* онлайн-сервисы",
+                        parse_mode=ParseMode.MARKDOWN
+                    )
+                elif "file not found" in error_msg or "404" in error_msg:
+                    await result_msg.edit_text(
+                        f"*💥 Файл недоступен:*\n\n"
+                        f"**Файл удалён с серверов Telegram**\n\n"
+                        f"*⏰ Срок хранения:* 24 часа\n\n"
+                        f"*📤 Решение:*\n"
+                        f"• Отправьте файл заново\n"
+                        f"• Используйте свежие файлы\n\n"
+                        f"*⚠️ Файлы старше 24ч недоступны*",
+                        parse_mode=ParseMode.MARKDOWN
+                    )
+                else:
+                    await result_msg.edit_text(
+                        f"*💥 Ошибка с файлом:*\n\n"
+                        f"`{str(file_error)[:100]}`\n\n"
+                        f"*🔧 Возможные причины:*\n"
+                        f"• Проблемы с сетью\n"
+                        f"• Файл повреждён\n"
+                        f"• Временная ошибка API\n\n"
+                        f"*📤 Попробуйте отправить заново*",
+                        parse_mode=ParseMode.MARKDOWN
+                    )
+                return
+                
         elif message.text:
             text_hash = calculate_text_hash(message.text, algorithm.lower())
+            text_length = len(message.text)
+            
+            if text_length > 1000:
+                text_length_formatted = f"{text_length:,} символов"
+            else:
+                text_length_formatted = f"{text_length} символов"
             
             await result_msg.edit_text(
-                f"*📝 Хеш текста* (`{message.text}`)\n\n"
+                f"*📝 Хеш текста*\n\n"
                 f"**{algorithm}:** `{text_hash}`\n\n"
-                f"*⚡ Мгновенно!*",
+                f"*📏 Длина:* {text_length_formatted}\n"
+                f"*✅ Готово!*",
                 parse_mode=ParseMode.MARKDOWN
             )
             
         else:
             await result_msg.edit_text(
-                "*❌* Не удалось обработать данные!\n\n"
-                "*Поддерживается:* текст или файлы до 50 МБ",
+                "*❌ Не удалось обработать данные!*\n\n"
+                "*Поддерживается:*\n"
+                "• Текстовые сообщения (без лимита)\n"
+                "• Файлы до 20 МБ\n\n"
+                "*💡 Для больших файлов:* \n"
+                "• Сожмите до <20 МБ\n"
+                "• Используйте онлайн-сервисы\n"
+                "*📤 Отправьте текст или файл*",
                 parse_mode=ParseMode.MARKDOWN
             )
             
     except Exception as e:
-        logger.error(f"Хеш-ошибка: {e}")
+        logger.error(f"Общая хеш-ошибка: {e}")
         await result_msg.edit_text(
-            f"*💥 Ошибка:*\n\n"
+            f"*💥 Критическая ошибка:*\n\n"
             f"`{str(e)[:100]}`\n\n"
-            f"*🔧 Попробуйте другой файл или текст*",
+            f"*🔧 Обратитесь к разработчику*",
             parse_mode=ParseMode.MARKDOWN
         )
 
