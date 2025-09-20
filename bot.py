@@ -24,11 +24,7 @@ LOG_DIR = os.path.join(BOT_DIR, 'logs')
 
 load_dotenv()
 
-try:
-    shutil.rmtree('logs')
-    os.makedirs('logs')
-except FileNotFoundError:
-    os.makedirs('logs')
+LOG_DIR = os.path.join(BOT_DIR, 'logs')
 
 if os.name == 'nt':
     import sys
@@ -40,7 +36,8 @@ if os.name == 'nt':
         handlers=[
             logging.FileHandler(os.path.join(LOG_DIR, 'bot.log'), encoding='utf-8'),
             logging.StreamHandler(sys.stdout)
-        ]
+        ],
+        force=True
     )
 else:
     logging.basicConfig(
@@ -49,10 +46,42 @@ else:
         handlers=[
             logging.FileHandler(os.path.join(LOG_DIR, 'bot.log'), encoding='utf-8'),
             logging.StreamHandler()
-        ]
+        ],
+        force=True
     )
 
 logger = logging.getLogger(__name__)
+
+
+PM2_RUNNING = os.getenv('BOT_TYPE') == 'docker-pm2' or 'pm2' in ' '.join(sys.argv).lower()
+
+if PM2_RUNNING:
+    logger.info("🚀 PM2 detected - running in production mode")
+    os.environ['PYTHONUNBUFFERED'] = '1'
+
+if os.path.ismount(LOG_DIR):
+    logger.info("✅ Logs directory is mounted (Docker)")
+else:
+    try:
+        shutil.rmtree(LOG_DIR)
+        os.makedirs(LOG_DIR)
+        logger.info("✅ Local logs directory recreated")
+    except FileNotFoundError:
+        os.makedirs(LOG_DIR)
+        logger.info("✅ Local logs directory created")
+
+if PM2_RUNNING:
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.StreamHandler(sys.stdout)
+        ],
+        force=True
+    )
+    logger.info("📝 PM2 logging configured (stdout only)")
+
+
 
 bot = Bot(token=os.getenv("BOT_TOKEN"))
 storage = MemoryStorage()
