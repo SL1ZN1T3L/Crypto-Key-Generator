@@ -26,7 +26,6 @@ load_dotenv()
 
 
 
-# Создаём базовый logger ДО настройки
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -34,31 +33,23 @@ def setup_logging():
     """Безопасная настройка логирования"""
     global logger
     
-    # Создаём директорию логов, если её нет
     os.makedirs(LOG_DIR, exist_ok=True)
-    
-    # Определяем путь к файлу лога
     log_file = os.path.join(LOG_DIR, 'bot.log')
     
-    # Формат логов
     log_format = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     
-    # Настройка для Windows
     if os.name == 'nt':
         import sys
         sys.stdout.reconfigure(encoding='utf-8')
         sys.stderr.reconfigure(encoding='utf-8')
         
-        # Пытаемся удалить старый файл лога, если он существует
         if os.path.exists(log_file):
             try:
-                # Закрываем все открытые FileHandler'ы
                 for handler in logging.root.handlers[:]:
                     if isinstance(handler, logging.FileHandler):
                         handler.close()
                         logging.root.handlers.remove(handler)
                 
-                # Теперь безопасно удаляем
                 if os.path.exists(log_file):
                     os.remove(log_file)
                     
@@ -66,37 +57,30 @@ def setup_logging():
             except (PermissionError, OSError) as e:
                 logger.warning(f"⚠️ Не удалось удалить старый лог: {e}")
         
-        # Настраиваем новый FileHandler
         file_handler = logging.FileHandler(log_file, encoding='utf-8')
         file_handler.setFormatter(logging.Formatter(log_format))
         
-        # Удаляем старые handlers и добавляем новые
         logging.root.handlers.clear()
         logging.root.addHandler(file_handler)
         logging.root.addHandler(logging.StreamHandler(sys.stdout))
         logging.root.setLevel(logging.INFO)
         
     else:
-        # Настройка для Unix/Linux/Mac
         try:
-            # Пытаемся удалить старый файл лога
             if os.path.exists(log_file):
                 os.remove(log_file)
                 logger.info("🧹 Старый лог-файл удалён (Unix)")
         except (PermissionError, OSError) as e:
             logger.warning(f"⚠️ Не удалось удалить старый лог: {e}")
         
-        # Настраиваем новый FileHandler
         file_handler = logging.FileHandler(log_file, encoding='utf-8')
         file_handler.setFormatter(logging.Formatter(log_format))
         
-        # Удаляем старые handlers и добавляем новые
         logging.root.handlers.clear()
         logging.root.addHandler(file_handler)
         logging.root.addHandler(logging.StreamHandler())
         logging.root.setLevel(logging.INFO)
     
-    # Устанавливаем формат для всех handlers
     for handler in logging.root.handlers:
         handler.setFormatter(logging.Formatter(log_format))
     
@@ -111,7 +95,6 @@ if not BOT_TOKEN:
     logger.error("💡 Шаблон: скопируйте .env.example → .env")
     logger.error("💡 Получите токен: @BotFather в Telegram")
     
-    # Для Docker показываем дополнительную инструкцию
     if os.path.exists('/.dockerenv') or os.getenv('DOCKER_CONTAINER'):
         logger.error("🐳 DOCKER: Запустите с --env-file .env")
         logger.error("🐳 Пример: docker run --env-file .env your_image")
@@ -122,7 +105,6 @@ logger.info(f"✅ BOT_TOKEN успешно загружен (длина: {len(BO
 logger.info("🔐 Крипто-генератор: инициализация...")
 
 
-# Инициализация логирования
 logger = setup_logging()
 
 PM2_RUNNING = os.getenv('BOT_TYPE') == 'docker-pm2' or 'pm2' in ' '.join(sys.argv).lower()
@@ -131,14 +113,12 @@ if PM2_RUNNING:
     logger.info("🚀 PM2 detected - running in production mode")
     os.environ['PYTHONUNBUFFERED'] = '1'
 
-# Проверяем монтирование директории (только для Docker)
 if os.path.ismount(LOG_DIR):
     logger.info("✅ Logs directory is mounted (Docker)")
 else:
     logger.info("✅ Local logs directory ready")
 
 if PM2_RUNNING:
-    # Переконфигурируем логирование для PM2 (только stdout)
     for handler in logging.root.handlers[:]:
         if isinstance(handler, logging.FileHandler):
             try:
@@ -147,7 +127,6 @@ if PM2_RUNNING:
             except Exception as e:
                 logger.warning(f"Не удалось закрыть file handler для PM2: {e}")
     
-    # Добавляем только StreamHandler
     console_handler = logging.StreamHandler()
     console_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
     
@@ -172,15 +151,15 @@ class CryptoSteps(StatesGroup):
     ssh_get_server_info_for_existing = State()
     ssh_wait_for_password = State()
     ssh_wait_for_2fa = State()
-    hash_menu = State()
     hash_choose_algorithm = State()
     hash_get_input = State()
+    hash_info_display = State()
 
 
 def get_main_menu_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔑 SSH-ключи", callback_data="ssh_menu")],
-        [InlineKeyboardButton(text="🔐 Хеширование", callback_data="hash_menu")]
+        [InlineKeyboardButton(text="🔐 Хеширование", callback_data="hash_start")]
     ])
 
 def get_ssh_menu_keyboard() -> InlineKeyboardMarkup:
@@ -197,22 +176,29 @@ def get_ssh_key_type_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="ssh_menu")]
     ])
 
-def get_hash_menu_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔐 Вычислить хеш", callback_data="hash_calculate")],
-        [InlineKeyboardButton(text="ℹ️ Справка по алгоритмам", callback_data="hash_info")],
-        [InlineKeyboardButton(text="⬅️ Главное меню", callback_data="main_menu")]
-    ])
-
 def get_hash_algorithm_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="MD5", callback_data="hash_md5"),
          InlineKeyboardButton(text="SHA-1", callback_data="hash_sha1")],
         [InlineKeyboardButton(text="SHA-256", callback_data="hash_sha256"),
          InlineKeyboardButton(text="SHA-512", callback_data="hash_sha512")],
-        [InlineKeyboardButton(text="BLAKE2b", callback_data="hash_blake2b"),
-         InlineKeyboardButton(text="⬅️ Назад", callback_data="hash_menu")]
+        [InlineKeyboardButton(text="BLAKE2b", callback_data="hash_blake2b")],
+        [InlineKeyboardButton(text="ℹ️ Справка по алгоритмам", callback_data="hash_info")],
+        [InlineKeyboardButton(text="⬅️ Главное меню", callback_data="main_menu")]
     ])
+
+def get_hash_input_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Выбор алгоритма", callback_data="hash_start")],
+        [InlineKeyboardButton(text="🏠 Главное меню", callback_data="main_menu")]
+    ])
+
+def get_hash_info_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Назад к выбору алгоритма", callback_data="hash_start")],
+        [InlineKeyboardButton(text="🏠 Главное меню", callback_data="main_menu")]
+    ])
+
 
 def get_ssh_export_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -249,26 +235,41 @@ async def set_bot_commands():
     except Exception as e:
         logger.error(f"❌ Ошибка регистрации команд: {e}")
 
-@dp.message(CommandStart())
-async def cmd_start(message: Message, state: FSMContext):
-    """Обработчик команды /start"""
+async def send_start_message(message: Message, state: FSMContext, edit_message: bool = False):
+    """
+    Отправляет стартовое сообщение и главное меню.
+    Используется для /start и для кнопки "Главное меню".
+    """
     await state.clear()
-    await message.answer(
+    text = (
         "🔐 *Крипто-генератор*\n\n"
         "Я помогу тебе сгенерировать:\n"
         "• SSH-ключи для серверов\n"
         "• Хеши для проверки целостности\n\n"
-        "Выберите раздел:",
-        reply_markup=get_main_menu_keyboard(),
-        parse_mode=ParseMode.MARKDOWN
+        "Выберите раздел:"
     )
+    keyboard = get_main_menu_keyboard()
+
+    if edit_message and message.from_user.is_bot:
+        try:
+            await message.edit_text(text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
+        except Exception:
+            await message.answer(text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
+    else:
+        await message.answer(text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
     await state.set_state(CryptoSteps.main_menu)
+
+
+@dp.message(CommandStart())
+async def cmd_start(message: Message, state: FSMContext):
+    """Обработчик команды /start"""
+    await send_start_message(message, state, edit_message=False)
+
 
 @dp.message(Command("help"))
 async def cmd_help(message: Message, state: FSMContext):
     """Обработчик команды /help - минимальная версия"""
-    await state.clear()
-    
+    await state.set_state(CryptoSteps.main_menu)    
     help_text = (
         "🔑 *Crypto Key Generator* — ваш крипто-арсенал\n\n"
         
@@ -312,9 +313,6 @@ async def cmd_help(message: Message, state: FSMContext):
             plain_text,
             reply_markup=get_main_menu_keyboard()
         )
-
-
-
         
 
 @dp.callback_query(StateFilter(CryptoSteps.main_menu), lambda c: c.data == "ssh_menu")
@@ -329,16 +327,17 @@ async def ssh_menu_handler(query: types.CallbackQuery, state: FSMContext):
     await state.set_state(CryptoSteps.ssh_menu)
 
 
-@dp.callback_query(StateFilter(CryptoSteps.main_menu), lambda c: c.data == "hash_menu")
-async def hash_menu_handler(query: types.CallbackQuery, state: FSMContext):
-    """Хеш-меню"""
+@dp.callback_query(StateFilter(CryptoSteps.main_menu), lambda c: c.data == "hash_start")
+@dp.callback_query(StateFilter(CryptoSteps.hash_choose_algorithm, CryptoSteps.hash_get_input, CryptoSteps.hash_info_display), lambda c: c.data == "hash_start")
+async def hash_start_entry_point(query: types.CallbackQuery, state: FSMContext):
+    """Прямой вход в выбор алгоритма хеширования из главного меню или кнопки 'Назад'."""
     await query.message.edit_text(
-        "🔐 *Хеширование*\n\n"
-        "Вычисление контрольных сумм для проверки целостности файлов:",
-        reply_markup=get_hash_menu_keyboard(),
+        "🔐 *Вычисление хеша*\n\n"
+        "Выберите алгоритм хеширования:",
+        reply_markup=get_hash_algorithm_keyboard(),
         parse_mode=ParseMode.MARKDOWN
     )
-    await state.set_state(CryptoSteps.hash_menu)
+    await state.set_state(CryptoSteps.hash_choose_algorithm)
 
 
 # === SSH SECTION ===
@@ -450,6 +449,7 @@ async def ssh_generate_key(state: FSMContext, passphrase: Optional[bytes]):
             encryption_algorithm=encryption
         )
     except UnsupportedAlgorithm:
+        logger.warning("bcrypt недоступен. Ключ будет сгенерирован без шифрования.")
         await bot.send_message(
             chat_id, 
             "⚠️ bcrypt недоступен. Ключ без шифрования.\n"
@@ -472,6 +472,7 @@ async def ssh_generate_key(state: FSMContext, passphrase: Optional[bytes]):
             encryption_algorithm=encryption
         )
     except UnsupportedAlgorithm:
+        logger.warning("bcrypt недоступен. PKCS#8 ключ будет сгенерирован без шифрования.")
         pem_private_key_bytes = private_key_obj.private_bytes(
             encoding=serialization.Encoding.PEM,
             format=serialization.PrivateFormat.PKCS8,
@@ -479,7 +480,6 @@ async def ssh_generate_key(state: FSMContext, passphrase: Optional[bytes]):
         )
     pem_private_key_str = pem_private_key_bytes.decode('utf-8')
 
-    # Публичный ключ
     public_key_obj = private_key_obj.public_key()
     ssh_public_key_bytes = public_key_obj.public_bytes(
         encoding=serialization.Encoding.OpenSSH,
@@ -821,19 +821,8 @@ async def ssh_handle_connection(message: Message, state: FSMContext):
 
 
 # === HASH SECTION ===
-@dp.callback_query(StateFilter(CryptoSteps.hash_menu), lambda c: c.data == "hash_calculate")
-async def hash_calculate_handler(query: types.CallbackQuery, state: FSMContext):
-    """Выбор алгоритма хеширования"""
-    await query.message.edit_text(
-        "🔐 *Вычисление хеша*\n\n"
-        "Выберите алгоритм хеширования:",
-        reply_markup=get_hash_algorithm_keyboard(),
-        parse_mode=ParseMode.MARKDOWN
-    )
-    await state.set_state(CryptoSteps.hash_choose_algorithm)
 
-
-@dp.callback_query(StateFilter(CryptoSteps.hash_menu), lambda c: c.data == "hash_info")
+@dp.callback_query(StateFilter(CryptoSteps.hash_choose_algorithm), lambda c: c.data == "hash_info")
 async def hash_info_handler(query: types.CallbackQuery, state: FSMContext):
     """Справка по алгоритмам"""
     info_text = (
@@ -848,11 +837,10 @@ async def hash_info_handler(query: types.CallbackQuery, state: FSMContext):
     
     await query.message.edit_text(
         info_text,
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data="hash_menu")]
-        ]),
+        reply_markup=get_hash_info_keyboard(),
         parse_mode=ParseMode.MARKDOWN
     )
+    await state.set_state(CryptoSteps.hash_info_display)
 
 
 @dp.callback_query(StateFilter(CryptoSteps.hash_choose_algorithm), lambda c: c.data.startswith("hash_"))
@@ -883,10 +871,7 @@ async def hash_request_input(query: types.CallbackQuery, state: FSMContext):
     
     await query.message.edit_text(
         input_text,
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="ℹ️ Справка", callback_data="hash_info")],
-            [InlineKeyboardButton(text="⬅️ Выбор алгоритма", callback_data="hash_calculate")]
-        ]),
+        reply_markup=get_hash_input_keyboard(),
         parse_mode=ParseMode.MARKDOWN
     )
     await state.set_state(CryptoSteps.hash_get_input)
@@ -1095,7 +1080,7 @@ def calculate_file_hash(file_data: bytes, algorithm: str) -> str:
     return h.hexdigest()
 
 
-@dp.callback_query(lambda c: c.data in ["cancel", "back_main", "main_menu", "ssh_menu", "hash_menu"])
+@dp.callback_query(lambda c: c.data in ["cancel", "main_menu", "ssh_menu"])
 async def handle_navigation(query: types.CallbackQuery, state: FSMContext):
     """Общая навигация"""
     await query.answer()
@@ -1103,31 +1088,22 @@ async def handle_navigation(query: types.CallbackQuery, state: FSMContext):
     if query.data == "cancel":
         await query.message.delete()
         await state.clear()
+        await send_start_message(query.message, state, edit_message=True)
+        return
     
-    data_map = {
-        "back_main": "main_menu",
-        "main_menu": get_main_menu_keyboard(),
-        "ssh_menu": (get_ssh_menu_keyboard(), CryptoSteps.ssh_menu),
-        "hash_menu": (get_hash_menu_keyboard(), CryptoSteps.hash_menu)
-    }
+    if query.data == "main_menu":
+        await send_start_message(query.message, state, edit_message=True)
+        return
     
-    if query.data in data_map:
-        if isinstance(data_map[query.data], tuple):
-            keyboard, new_state = data_map[query.data]
-            await query.message.edit_text(
-                "🏠 *Главное меню*\n\nВыберите раздел:",
-                reply_markup=keyboard,
-                parse_mode=ParseMode.MARKDOWN
-            )
-            await state.set_state(new_state)
-        else:
-            keyboard = data_map[query.data]
-            await query.message.edit_text(
-                "🏠 *Главное меню*\n\nВыберите раздел:",
-                reply_markup=keyboard,
-                parse_mode=ParseMode.MARKDOWN
-            )
-            await state.set_state(CryptoSteps.main_menu)
+    if query.data == "ssh_menu":
+        await query.message.edit_text(
+            "🔑 *SSH-ключи*\n\n"
+            "Генерация и управление SSH-ключами для безопасного доступа к серверам:",
+            reply_markup=get_ssh_menu_keyboard(),
+            parse_mode=ParseMode.MARKDOWN
+        )
+        await state.set_state(CryptoSteps.ssh_menu)
+        return
 
 
 async def main():
