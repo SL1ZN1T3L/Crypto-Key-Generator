@@ -5,7 +5,9 @@ import sys
 import shlex
 import hashlib
 import base64
+from datetime import datetime, timedelta,timezone
 from typing import Dict, Any, Optional
+
 from aiogram.enums import ParseMode
 from cryptography.exceptions import UnsupportedAlgorithm
 
@@ -16,9 +18,11 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, BufferedInputFile
-from cryptography.hazmat.primitives import serialization
+from cryptography import x509
+from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.asymmetric import rsa, ed25519
 from cryptography.hazmat.primitives.serialization import load_ssh_public_key
+from cryptography.x509.oid import NameOID
 from dotenv import load_dotenv
 
 BOT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -159,11 +163,23 @@ class CryptoSteps(StatesGroup):
     
     ssh_wait_for_key_to_validate = State()
 
+    # X.509 Certificate states
+    x509_menu = State()
+    x509_get_type_selection = State()
+    x509_get_common_name = State()
+    x509_get_organization_name = State()
+    x509_get_country_code = State()
+    x509_get_state_province = State()
+    x509_get_locality = State()
+    x509_get_email_address = State()
+    x509_choose_self_signed_days = State()
+
 
 def get_main_menu_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔑 SSH-ключи", callback_data="ssh_menu")],
-        [InlineKeyboardButton(text="🔐 Хеширование", callback_data="hash_start")]
+        [InlineKeyboardButton(text="🔐 Хеширование", callback_data="hash_start")],
+        [InlineKeyboardButton(text="🪪 X.509 Сертификаты", callback_data="x509_menu")]
     ])
 
 def get_ssh_menu_keyboard() -> InlineKeyboardMarkup:
@@ -228,6 +244,28 @@ def get_passphrase_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="Без passphrase", callback_data="no_passphrase")]
     ])
 
+def get_x509_menu_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🛡️ Создать самоподписанный сертификат", callback_data="x509_generate_self_signed")],
+        [InlineKeyboardButton(text="📝 Создать запрос CSR", callback_data="x509_generate_csr")],
+        [InlineKeyboardButton(text="⬅️ Главное меню", callback_data="main_menu")]
+    ])
+
+def get_x509_skip_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Пропустить (N/A)", callback_data="x509_skip")],
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="x509_menu")]
+    ])
+
+def get_x509_days_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="30 дней", callback_data="x509_days_30")],
+        [InlineKeyboardButton(text="90 дней", callback_data="x509_days_90")],
+        [InlineKeyboardButton(text="365 дней", callback_data="x509_days_365")],
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="x509_menu")]
+    ])
+
+
 async def set_bot_commands():
     """Автоматическая регистрация команд в BotFather"""
     commands = [
@@ -257,7 +295,8 @@ async def send_start_message(message: Message, state: FSMContext, edit_message: 
         "🔐 *Крипто-генератор*\n\n"
         "Я помогу тебе сгенерировать:\n"
         "• SSH-ключи для серверов\n"
-        "• Хеши для проверки целостности\n\n"
+        "• Хеши для проверки целостности\n"
+        "• X.509 Сертификаты (самоподписанные, CSR)\n\n"
         "Выберите раздел:"
     )
     keyboard = get_main_menu_keyboard()
@@ -302,6 +341,10 @@ async def cmd_help(message: Message, state: FSMContext):
         "• Алгоритмы: MD5, SHA-1, SHA-256, SHA-512, BLAKE2b\n"
         "• *Файлы до 20 МБ* (лимит Bot API) + любой текст\n"
         "• Hex-формат, мгновенный результат\n\n"
+        "**🪪 X.509 Сертификаты:**\n"
+        "• Генерация самоподписанных SSL/TLS сертификатов\n"
+        "• Генерация запросов на подпись сертификата (CSR)\n"
+        "• Используется ключ RSA 2048 бит\n\n"
         "⚠️ *Для файлов >20 МБ:* сожмите или используйте онлайн-сервисы\n\n"
 
         "**⚠️ Безопасность:**\n"
@@ -341,7 +384,7 @@ async def ssh_menu_handler(query: types.CallbackQuery, state: FSMContext):
 
 
 @dp.callback_query(StateFilter(CryptoSteps.main_menu), lambda c: c.data == "hash_start")
-@dp.callback_query(StateFilter(CryptoSteps.hash_choose_algorithm, CryptoSteps.hash_get_input, CryptoSteps.hash_info_display), lambda c: c.data == "hash_start")
+@dp.callback_query(StateFilter(CryptoSteps.hash_choose_algorithm, CryptoSteps.hash_get_input, CryptoSteps.hash_info_display,CryptoSteps.x509_get_country_code,CryptoSteps.x509_get_state_province,CryptoSteps.x509_get_locality,CryptoSteps.x509_get_email_address), lambda c: c.data == "hash_start")
 async def hash_start_entry_point(query: types.CallbackQuery, state: FSMContext):
     """Прямой вход в выбор алгоритма хеширования из главного меню или кнопки 'Назад'."""
     await query.message.edit_text(
@@ -351,6 +394,304 @@ async def hash_start_entry_point(query: types.CallbackQuery, state: FSMContext):
         parse_mode=ParseMode.MARKDOWN
     )
     await state.set_state(CryptoSteps.hash_choose_algorithm)
+
+@dp.callback_query(StateFilter(CryptoSteps.main_menu, CryptoSteps.x509_get_common_name,CryptoSteps.x509_get_organization_name,), lambda c: c.data == "x509_menu")
+async def x509_menu_handler(query: types.CallbackQuery, state: FSMContext):
+    """X.509 Сертификаты - главное меню"""
+    await query.message.edit_text(
+        "🪪 *X.509 Сертификаты*\n\n"
+        "Выберите, что вы хотите сгенерировать:",
+        reply_markup=get_x509_menu_keyboard(),
+        parse_mode=ParseMode.MARKDOWN
+    )
+    await state.set_state(CryptoSteps.x509_menu)
+
+@dp.callback_query(StateFilter(CryptoSteps.x509_menu), lambda c: c.data in ["x509_generate_self_signed", "x509_generate_csr", "x509_generate_self_signed_start"])
+async def x509_start_certificate_flow(query: types.CallbackQuery, state: FSMContext):
+    """Начало процесса генерации сертификата/CSR"""
+    is_csr = (query.data == "x509_generate_csr")
+    await state.update_data(is_csr=is_csr, chat_id=query.message.chat.id, cert_details={})
+    
+    cert_type = "запроса CSR" if is_csr else "самоподписанного сертификата"
+    
+    await query.message.edit_text(
+        f"📝 *Генерация {cert_type}*\n\n"
+        "Введите *Common Name* (например, `example.com` или `MyServer`):",
+        reply_markup=get_cancel_keyboard(),
+        parse_mode=ParseMode.MARKDOWN
+    )
+    await state.set_state(CryptoSteps.x509_get_common_name)
+
+
+@dp.message(StateFilter(CryptoSteps.x509_get_common_name))
+async def x509_process_common_name(message: Message, state: FSMContext):
+    """Обработка Common Name и запрос Organization Name"""
+    cn = message.text.strip()
+    if not cn:
+        await message.answer("❌ Common Name не может быть пустым. Пожалуйста, введите Common Name:")
+        return
+    
+    await state.update_data(cert_details={'CN': cn})
+    
+    await message.answer(
+        "🏢 Введите *Organization Name* (например, `My Company LLC`)\n"
+        "_(Можно пропустить)_:",
+        reply_markup=get_x509_skip_keyboard(),
+        parse_mode=ParseMode.MARKDOWN
+    )
+    await state.set_state(CryptoSteps.x509_get_organization_name)
+
+@dp.callback_query(StateFilter(CryptoSteps.x509_get_organization_name, CryptoSteps.x509_get_country_code, CryptoSteps.x509_get_state_province, CryptoSteps.x509_get_locality, CryptoSteps.x509_get_email_address), lambda c: c.data == "x509_skip")
+async def x509_skip_field(query: types.CallbackQuery, state: FSMContext):
+    """Пропускает текущее поле и переходит к следующему или завершению."""
+    await query.answer()
+    current_state = await state.get_state()
+    next_step = None
+    
+    if current_state == CryptoSteps.x509_get_organization_name:
+        next_step = CryptoSteps.x509_get_country_code
+        text_prompt = "🌍 Введите *Country Code* (2 буквы, например, `US` или `RU`)\n_(Можно пропустить)_:"
+    elif current_state == CryptoSteps.x509_get_country_code:
+        next_step = CryptoSteps.x509_get_state_province
+        text_prompt = "🏞️ Введите *State or Province Name* (например, `California` или `Moscow`)\n_(Можно пропустить)_:"
+    elif current_state == CryptoSteps.x509_get_state_province:
+        next_step = CryptoSteps.x509_get_locality
+        text_prompt = "🏙️ Введите *Locality Name* (город, например, `San Francisco` или `Moscow`)\n_(Можно пропустить)_:"
+    elif current_state == CryptoSteps.x509_get_locality:
+        next_step = CryptoSteps.x509_get_email_address
+        text_prompt = "📧 Введите *Email Address* (например, `admin@example.com`)\n_(Можно пропустить)_:"
+    elif current_state == CryptoSteps.x509_get_email_address:
+        await _finalize_x509_process(state, query.message)
+        return
+        
+    if next_step:
+        await query.message.edit_text(text_prompt, reply_markup=get_x509_skip_keyboard(), parse_mode=ParseMode.MARKDOWN)
+        await state.set_state(next_step)
+
+@dp.message(StateFilter(CryptoSteps.x509_get_organization_name))
+async def x509_process_organization_name(message: Message, state: FSMContext):
+    """Обработка Organization Name и запрос Country Code"""
+    org = message.text.strip()
+    if org:
+        user_data = await state.get_data()
+        cert_details = user_data.get('cert_details', {})
+        cert_details['O'] = org
+        await state.update_data(cert_details=cert_details)
+    
+    await message.answer(
+        "🌍 Введите *Country Code* (2 буквы, например, `US` или `RU`)\n"
+        "_(Можно пропустить)_:",
+        reply_markup=get_x509_skip_keyboard(),
+        parse_mode=ParseMode.MARKDOWN
+    )
+    await state.set_state(CryptoSteps.x509_get_country_code)
+
+@dp.message(StateFilter(CryptoSteps.x509_get_country_code))
+async def x509_process_country_code(message: Message, state: FSMContext):
+    """Обработка Country Code и запрос State/Province Name"""
+    country = message.text.strip()
+    if country:
+        if len(country) != 2 or not country.isalpha():
+            await message.answer("❌ Код страны должен состоять из двух букв. Пожалуйста, введите корректный код:")
+            return
+        user_data = await state.get_data()
+        cert_details = user_data.get('cert_details', {})
+        cert_details['C'] = country.upper()
+        await state.update_data(cert_details=cert_details)
+    
+    await message.answer(
+        "🏞️ Введите *State or Province Name* (например, `California` или `Moscow`)\n"
+        "_(Можно пропустить)_:",
+        reply_markup=get_x509_skip_keyboard(),
+        parse_mode=ParseMode.MARKDOWN
+    )
+    await state.set_state(CryptoSteps.x509_get_state_province)
+
+@dp.message(StateFilter(CryptoSteps.x509_get_state_province))
+async def x509_process_state_province(message: Message, state: FSMContext):
+    """Обработка State/Province Name и запрос Locality Name"""
+    state_province = message.text.strip()
+    if state_province:
+        user_data = await state.get_data()
+        cert_details = user_data.get('cert_details', {})
+        cert_details['ST'] = state_province
+        await state.update_data(cert_details=cert_details)
+        
+    await message.answer(
+        "🏙️ Введите *Locality Name* (город, например, `San Francisco` или `Moscow`)\n"
+        "_(Можно пропустить)_:",
+        reply_markup=get_x509_skip_keyboard(),
+        parse_mode=ParseMode.MARKDOWN
+    )
+    await state.set_state(CryptoSteps.x509_get_locality)
+
+
+@dp.message(StateFilter(CryptoSteps.x509_get_locality))
+async def x509_process_locality_name(message: Message, state: FSMContext):
+    """Обработка Locality Name и запрос Email Address"""
+    locality = message.text.strip()
+    if locality:
+        user_data = await state.get_data()
+        cert_details = user_data.get('cert_details', {})
+        cert_details['L'] = locality
+        await state.update_data(cert_details=cert_details)
+        
+    await message.answer(
+        "📧 Введите *Email Address* (например, `admin@example.com`)\n"
+        "_(Можно пропустить)_:",
+        reply_markup=get_x509_skip_keyboard(),
+        parse_mode=ParseMode.MARKDOWN
+    )
+    await state.set_state(CryptoSteps.x509_get_email_address)
+
+@dp.message(StateFilter(CryptoSteps.x509_get_email_address))
+async def x509_process_email_address(message: Message, state: FSMContext):
+    """Обработка Email Address и завершение процесса/запрос срока действия"""
+    email = message.text.strip()
+    if email:
+        if "@" not in email or "." not in email:
+            await message.answer("❌ Похоже, это недействительный адрес электронной почты. Пожалуйста, введите корректный Email Address:")
+            return
+        user_data = await state.get_data()
+        cert_details = user_data.get('cert_details', {})
+        cert_details['Email'] = email
+        await state.update_data(cert_details=cert_details)
+        
+    await _finalize_x509_process(state, message)
+
+
+@dp.callback_query(StateFilter(CryptoSteps.x509_choose_self_signed_days), lambda c: c.data.startswith("x509_days_"))
+async def x509_process_self_signed_days(query: types.CallbackQuery, state: FSMContext):
+    """Выбор срока действия для самоподписанного сертификата и генерация"""
+    await query.answer()
+    days_str = query.data.split('_')[2]
+    try:
+        days = int(days_str)
+        user_data = await state.get_data()
+        user_data['self_signed_days'] = days
+        await state.update_data(user_data)
+        
+        await _generate_x509_assets(state, query.message)
+    except ValueError:
+        await query.message.answer(
+            "❌ Некорректный выбор срока действия. Попробуйте ещё раз:",
+            reply_markup=get_x509_days_keyboard(),
+            parse_mode=ParseMode.MARKDOWN
+        )
+
+async def _finalize_x509_process(state: FSMContext, message: types.Message):
+    user_data = await state.get_data()
+    is_csr = user_data.get('is_csr')
+    chat_id = user_data.get('chat_id')
+
+    if not is_csr:
+        await message.answer(
+            "⏳ Теперь выберите срок действия самоподписанного сертификата:",
+            reply_markup=get_x509_days_keyboard(),
+            parse_mode=ParseMode.MARKDOWN
+        )
+        await state.set_state(CryptoSteps.x509_choose_self_signed_days)
+    else:
+        await _generate_x509_assets(state, message)
+
+
+async def _generate_x509_assets(state: FSMContext, message: types.Message):
+    """Генерирует CSR или самоподписанный сертификат и отправляет пользователю."""
+    user_data = await state.get_data()
+    is_csr = user_data.get('is_csr')
+    cert_details = user_data.get('cert_details', {})
+    chat_id = user_data.get('chat_id')
+    self_signed_days = user_data.get('self_signed_days', 365)
+
+    generation_msg = await message.answer(f"⏳ Генерирую {'CSR' if is_csr else 'самоподписанный сертификат'} и приватный ключ...", parse_mode=ParseMode.MARKDOWN)
+
+    try:
+        private_key = rsa.generate_private_key(
+            public_exponent=65537,
+            key_size=2048
+        )
+        private_pem = private_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption()
+        )
+        
+        subject_name_attrs = []
+        if 'CN' in cert_details: subject_name_attrs.append(x509.NameAttribute(NameOID.COMMON_NAME, cert_details['CN']))
+        if 'O' in cert_details: subject_name_attrs.append(x509.NameAttribute(NameOID.ORGANIZATION_NAME, cert_details['O']))
+        if 'C' in cert_details: subject_name_attrs.append(x509.NameAttribute(NameOID.COUNTRY_NAME, cert_details['C']))
+        if 'ST' in cert_details: subject_name_attrs.append(x509.NameAttribute(NameOID.STATE_OR_PROVINCE_NAME, cert_details['ST']))
+        if 'L' in cert_details: subject_name_attrs.append(x509.NameAttribute(NameOID.LOCALITY_NAME, cert_details['L']))
+        if 'Email' in cert_details: subject_name_attrs.append(x509.NameAttribute(NameOID.EMAIL_ADDRESS, cert_details['Email']))
+
+        subject = x509.Name(subject_name_attrs)
+
+        if is_csr:
+            csr_builder = x509.CertificateSigningRequestBuilder().subject_name(subject)
+            cn_value = cert_details.get('CN', '')
+            if cn_value and ('.' in cn_value or cn_value.endswith('.local')):
+                csr_builder = csr_builder.add_extension(
+                    x509.SubjectAlternativeName([x509.DNSName(cn_value)]), 
+                    critical=False
+                )
+            csr = csr_builder.sign(private_key, hashes.SHA256())
+            
+            csr_pem = csr.public_bytes(serialization.Encoding.PEM)
+
+            await generation_msg.edit_text(f"✅ *Запрос CSR для '{cert_details.get('CN', 'N/A')}' готов!*", parse_mode=ParseMode.MARKDOWN)
+            await bot.send_document(chat_id, BufferedInputFile(csr_pem, filename=f"{cert_details.get('CN', 'csr')}.csr"), caption="📝 Ваш CSR-запрос.")
+            await bot.send_document(chat_id, BufferedInputFile(private_pem, filename=f"{cert_details.get('CN', 'private_key')}.pem"), caption="🔐 *Приватный ключ* к вашему CSR.")
+        else:
+            builder = x509.CertificateBuilder().subject_name(
+                subject
+            ).issuer_name(
+                subject
+            ).public_key(
+                private_key.public_key()
+            ).serial_number(
+                x509.random_serial_number()
+            ).not_valid_before(
+                datetime.now(timezone.utc)
+            ).not_valid_after(
+                datetime.now(timezone.utc) + timedelta(days=self_signed_days)
+            )
+            cn_value = cert_details.get('CN', '')
+            # Only add SAN if CN looks like a domain name
+            if cn_value and ('.' in cn_value or cn_value.endswith('.local')):
+                builder = builder.add_extension(
+                    x509.SubjectAlternativeName([x509.DNSName(cn_value)]),
+                    critical=False,
+                )
+            builder = builder.add_extension(
+                x509.BasicConstraints(ca=False, path_length=None),
+                critical=True,
+            )
+
+            certificate = builder.sign(private_key, hashes.SHA256())
+            cert_pem = certificate.public_bytes(serialization.Encoding.PEM)
+
+            await generation_msg.edit_text(f"✅ *Самоподписанный сертификат для '{cert_details.get('CN', 'N/A')}' готов!*", parse_mode=ParseMode.MARKDOWN)
+            await bot.send_document(chat_id, BufferedInputFile(cert_pem, filename=f"{cert_details.get('CN', 'certificate')}.crt"), caption=f"🛡️ Ваш самоподписанный сертификат (срок действия: {self_signed_days} дней).")
+            await bot.send_document(chat_id, BufferedInputFile(private_pem, filename=f"{cert_details.get('CN', 'private_key')}.pem"), caption="🔐 *Приватный ключ* к вашему сертификату.")
+
+        await bot.send_message(
+            chat_id,
+            "💡 Используйте с осторожностью! Приватный ключ — это ваш секрет.",
+            reply_markup=get_x509_menu_keyboard(),
+            parse_mode=ParseMode.MARKDOWN
+        )
+
+    except Exception as e:
+        logger.error(f"Ошибка при генерации X.509: {e}")
+        await generation_msg.edit_text(
+            f"*💥 Ошибка генерации:*\n\n`{str(e)[:150]}`\n\n"
+            f"Попробуйте ещё раз.",
+            reply_markup=get_x509_menu_keyboard(),
+            parse_mode=ParseMode.MARKDOWN
+        )
+    finally:
+        await state.clear()
+        await state.set_state(CryptoSteps.x509_menu)
 
 
 @dp.callback_query(StateFilter(CryptoSteps.ssh_menu), lambda c: c.data == "ssh_generate")
