@@ -4,6 +4,7 @@ import logging
 import sys
 import shlex
 import hashlib
+import base64
 from typing import Dict, Any, Optional
 from aiogram.enums import ParseMode
 from cryptography.exceptions import UnsupportedAlgorithm
@@ -17,13 +18,13 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, BufferedInputFile
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa, ed25519
+from cryptography.hazmat.primitives.serialization import load_ssh_public_key
 from dotenv import load_dotenv
 
 BOT_DIR = os.path.dirname(os.path.abspath(__file__))
 LOG_DIR = os.path.join(BOT_DIR, 'logs')
 
 load_dotenv()
-
 
 
 logging.basicConfig(level=logging.INFO)
@@ -34,6 +35,7 @@ def setup_logging():
     global logger
     
     os.makedirs(LOG_DIR, exist_ok=True)
+    
     log_file = os.path.join(LOG_DIR, 'bot.log')
     
     log_format = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -154,6 +156,8 @@ class CryptoSteps(StatesGroup):
     hash_choose_algorithm = State()
     hash_get_input = State()
     hash_info_display = State()
+    
+    ssh_wait_for_key_to_validate = State()
 
 
 def get_main_menu_keyboard() -> InlineKeyboardMarkup:
@@ -166,6 +170,7 @@ def get_ssh_menu_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔑 Сгенерировать новый SSH-ключ", callback_data="ssh_generate")],
         [InlineKeyboardButton(text="📤 Экспортировать существующий", callback_data="ssh_export")],
+        [InlineKeyboardButton(text="🔎 Проверить SSH-ключ", callback_data="ssh_validate_key")],
         [InlineKeyboardButton(text="⬅️ Главное меню", callback_data="main_menu")]
     ])
 
@@ -196,6 +201,13 @@ def get_hash_input_keyboard() -> InlineKeyboardMarkup:
 def get_hash_info_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⬅️ Назад к выбору алгоритма", callback_data="hash_start")],
+        [InlineKeyboardButton(text="🏠 Главное меню", callback_data="main_menu")]
+    ])
+
+def get_ssh_validation_result_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔎 Проверить ещё один ключ", callback_data="ssh_validate_key")],
+        [InlineKeyboardButton(text="⬅️ SSH-меню", callback_data="ssh_menu")],
         [InlineKeyboardButton(text="🏠 Главное меню", callback_data="main_menu")]
     ])
 
@@ -269,7 +281,8 @@ async def cmd_start(message: Message, state: FSMContext):
 @dp.message(Command("help"))
 async def cmd_help(message: Message, state: FSMContext):
     """Обработчик команды /help - минимальная версия"""
-    await state.set_state(CryptoSteps.main_menu)    
+    await state.clear()
+    
     help_text = (
         "🔑 *Crypto Key Generator* — ваш крипто-арсенал\n\n"
         
@@ -340,7 +353,6 @@ async def hash_start_entry_point(query: types.CallbackQuery, state: FSMContext):
     await state.set_state(CryptoSteps.hash_choose_algorithm)
 
 
-# === SSH SECTION ===
 @dp.callback_query(StateFilter(CryptoSteps.ssh_menu), lambda c: c.data == "ssh_generate")
 async def ssh_start_key_generation(query: types.CallbackQuery, state: FSMContext):
     """Начало генерации SSH-ключа"""
@@ -364,13 +376,27 @@ async def ssh_start_existing_key_export(query: types.CallbackQuery, state: FSMCo
     )
     await state.set_state(CryptoSteps.ssh_get_existing_public_key)
 
+@dp.callback_query(StateFilter(CryptoSteps.ssh_menu, CryptoSteps.ssh_wait_for_key_to_validate), lambda c: c.data == "ssh_validate_key")
+async def ssh_validate_key_prompt(query: types.CallbackQuery, state: FSMContext):
+    """Просит пользователя отправить публичный SSH-ключ для проверки"""
+    await query.message.edit_text(
+        "🔎 *Проверка публичного SSH-ключа*\n\n"
+        "Отправьте мне *полное содержимое* вашего публичного SSH-ключа "
+        "(текст, начинающийся с `ssh-rsa` или `ssh-ed25519`):",
+        reply_markup=get_cancel_keyboard(),
+        parse_mode=ParseMode.MARKDOWN
+    )
+    await state.set_state(CryptoSteps.ssh_wait_for_key_to_validate)
+
 
 @dp.message(StateFilter(CryptoSteps.ssh_get_existing_public_key))
 async def ssh_process_existing_public_key(message: Message, state: FSMContext):
-    """Обработка публичного SSH-ключа пользователя"""
+    """Обработка публичного SSH-ключа пользователя для экспорта"""
     public_key_input = message.text.strip() if message.text else ""
     
-    if public_key_input.startswith(("ssh-rsa", "ssh-ed25519")):
+    try:
+        load_ssh_public_key(public_key_input.encode('utf-8'))
+        
         await state.update_data(public_key=public_key_input)
         await message.answer(
             "✅ Публичный ключ принят!\n\n"
@@ -381,14 +407,108 @@ async def ssh_process_existing_public_key(message: Message, state: FSMContext):
             parse_mode=ParseMode.MARKDOWN
         )
         await state.set_state(CryptoSteps.ssh_get_server_info_for_existing)
-    else:
+    except (ValueError, Exception) as e:
+        logger.warning(f"Invalid public key for export: {e}")
         await message.answer(
-            "❌ Это не похоже на публичный SSH-ключ.\n\n"
+            "❌ Это не похоже на публичный SSH-ключ или он имеет неверный формат.\n\n"
             "Убедитесь, что вы скопировали содержимое файла `.pub` (начинается с `ssh-rsa` или `ssh-ed25519`).\n\n"
             "Попробуйте снова:",
             reply_markup=get_cancel_keyboard(),
             parse_mode=ParseMode.MARKDOWN
         )
+
+
+@dp.message(StateFilter(CryptoSteps.ssh_wait_for_key_to_validate))
+async def ssh_process_key_for_validation(message: Message, state: FSMContext):
+    """Обработка полученного публичного SSH-ключа для валидации"""
+    public_key_input = message.text.strip() if message.text else ""
+    chat_id = message.chat.id
+    
+    if not public_key_input:
+        await message.answer(
+            "❌ Отправлен пустой текст. Пожалуйста, вставьте ваш публичный SSH-ключ.",
+            reply_markup=get_cancel_keyboard(),
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+        
+    validation_msg = await message.answer(f"⏳ Анализирую ваш ключ...", parse_mode=ParseMode.MARKDOWN)
+
+    try:
+        public_key_obj = load_ssh_public_key(public_key_input.encode('utf-8'))
+
+        key_type_str = "Неизвестный тип"
+        key_size = "N/A"
+        
+        if isinstance(public_key_obj, rsa.RSAPublicKey):
+            key_type_str = "RSA"
+            key_size = f"{public_key_obj.key_size} бит"
+        elif isinstance(public_key_obj, ed25519.Ed25519PublicKey):
+            key_type_str = "Ed25519"
+            key_size = "256 бит"
+
+        fingerprints = calculate_ssh_fingerprints(public_key_obj)
+        
+        response_text = f"✅ *Ключ успешно проанализирован!*\n\n" \
+                        f"**Тип ключа:** `{key_type_str}`\n" \
+                        f"**Размер:** `{key_size}`\n\n"
+                        
+        if "SHA256" in fingerprints:
+            response_text += f"**SHA256 Fingerprint:**\n`{fingerprints['SHA256']}`\n\n"
+        if "MD5" in fingerprints:
+            response_text += f"**MD5 Fingerprint (устарел):**\n`{fingerprints['MD5']}`\n\n"
+        
+        await validation_msg.edit_text(response_text,
+                                        reply_markup=get_ssh_validation_result_keyboard(),
+                                        parse_mode=ParseMode.MARKDOWN)
+                                        
+    except (ValueError, TypeError) as e:
+        await validation_msg.edit_text(
+            f"*❌ Ошибка при анализе ключа:*\n\n"
+            f"`{str(e)}`\n\n"
+            f"Убедитесь, что ключ скопирован полностью и без изменений "
+            f"(начинается с `ssh-rsa`, `ssh-ed25519` и т.д.).\n"
+            f"Попробуйте ещё раз:",
+            reply_markup=get_ssh_validation_result_keyboard(),
+            parse_mode=ParseMode.MARKDOWN
+        )
+    except Exception as e:
+        logger.error(f"Неожиданная ошибка при валидации ключа: {e}")
+        await validation_msg.edit_text(
+            f"*💥 Произошла неожиданная ошибка:*\n\n"
+            f"`{str(e)[:100]}`\n\n"
+            f"Попробуйте ещё раз или свяжитесь с поддержкой.",
+            reply_markup=get_ssh_validation_result_keyboard(),
+            parse_mode=ParseMode.MARKDOWN
+        )
+
+    await state.set_state(CryptoSteps.ssh_menu)
+    
+    
+def calculate_ssh_fingerprints(public_key_obj) -> Dict[str, str]:
+    """Вычисляет MD5 и SHA256 fingerprint для публичного SSH-ключа."""
+    fingerprints = {}
+
+    try:
+        ssh_format_bytes = public_key_obj.public_bytes(
+            encoding=serialization.Encoding.OpenSSH,
+            format=serialization.PublicFormat.OpenSSH
+        )
+
+        parts = ssh_format_bytes.split(b' ')
+        if len(parts) >= 2:
+            base64_data = parts[1]
+            decoded_bytes = base64.b64decode(base64_data)
+
+            sha256_hash = hashlib.sha256(decoded_bytes).hexdigest()
+            fingerprints["SHA256"] = ":".join(sha256_hash[i:i+2] for i in range(0, len(sha256_hash), 2))
+
+            md5_hash = hashlib.md5(decoded_bytes).hexdigest()
+            fingerprints["MD5"] = ":".join(md5_hash[i:i+2] for i in range(0, len(md5_hash), 2))
+    except Exception as e:
+        logger.error(f"Ошибка при вычислении fingerprint SSH-ключа: {e}")
+    
+    return fingerprints
 
 
 @dp.callback_query(StateFilter(CryptoSteps.choose_ssh_key_type), lambda c: c.data.startswith("ssh_key_"))
@@ -441,7 +561,6 @@ async def ssh_generate_key(state: FSMContext, passphrase: Optional[bytes]):
 
     encryption = serialization.BestAvailableEncryption(passphrase) if passphrase else serialization.NoEncryption()
     
-    # OpenSSH формат
     try:
         openssh_private_key_bytes = private_key_obj.private_bytes(
             encoding=serialization.Encoding.PEM,
@@ -464,7 +583,6 @@ async def ssh_generate_key(state: FSMContext, passphrase: Optional[bytes]):
         )
     openssh_private_key_str = openssh_private_key_bytes.decode('utf-8')
 
-    # PEM формат
     try:
         pem_private_key_bytes = private_key_obj.private_bytes(
             encoding=serialization.Encoding.PEM,
@@ -820,8 +938,6 @@ async def ssh_handle_connection(message: Message, state: FSMContext):
         await state.set_state(CryptoSteps.main_menu)
 
 
-# === HASH SECTION ===
-
 @dp.callback_query(StateFilter(CryptoSteps.hash_choose_algorithm), lambda c: c.data == "hash_info")
 async def hash_info_handler(query: types.CallbackQuery, state: FSMContext):
     """Справка по алгоритмам"""
@@ -911,6 +1027,7 @@ async def hash_process_input(message: Message, state: FSMContext):
                     return
                 
                 if file_size_bytes > telegram_upload_limit:
+                    file_size_mb = file_size_bytes / (1024 * 1024)
                     await result_msg.edit_text(
                         f"*❌ Файл превышает лимит Telegram!*\n\n"
                         f"📏 Размер: {file_size_mb:.1f} МБ\n"
