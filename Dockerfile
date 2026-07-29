@@ -1,27 +1,46 @@
-FROM python:3.13-slim
+# syntax=docker/dockerfile:1
 
-# Устанавливаем Node.js и PM2
-RUN apt-get update && apt-get install -y curl && \
-    curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
-    apt-get install -y nodejs && \
-    npm install -g pm2 && \
-    apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+FROM python:3.13-slim AS builder
 
-# Рабочая директория
+ENV PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+COPY requirements.txt .
+RUN pip install --upgrade pip && pip install -r requirements.txt
+
+
+FROM python:3.13-slim AS runtime
+
+LABEL org.opencontainers.image.title="crypto-bot" \
+      org.opencontainers.image.description="Telegram-бот: SSH-ключи, хеши, X.509" \
+      org.opencontainers.image.licenses="MIT"
+
+ENV PATH="/opt/venv/bin:$PATH" \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONFAULTHANDLER=1 \
+    HEALTHCHECK_FILE=/tmp/bot-healthy
+
+COPY --from=builder /opt/venv /opt/venv
+
 WORKDIR /app
 
-# Устанавливаем Python-зависимости
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin botuser
 
-# Копируем файлы проекта
-COPY . .
+COPY --chown=botuser:botuser app/ ./app/
 
-# Создаём папку для логов
-RUN mkdir -p logs
+USER botuser
 
-# Копируем PM2 конфигурацию
-COPY ecosystem.config.js .
+HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
+    CMD ["python", "-m", "app.health"]
 
-# Запуск через PM2
-CMD ["pm2-runtime", "start", "ecosystem.config.js"]
+STOPSIGNAL SIGTERM
+
+CMD ["python", "-m", "app"]

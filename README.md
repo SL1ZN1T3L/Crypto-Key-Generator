@@ -5,152 +5,159 @@
 [![Telegram](https://img.shields.io/badge/Telegram-Bot-purple.svg)](https://core.telegram.org/bots)
 [![Async](https://img.shields.io/badge/Async-AIogram-orange.svg)](https://aiogram.dev/)
 [![Security](https://img.shields.io/badge/Security-Cryptography-green.svg)](https://cryptography.io/)
+[![Docker](https://img.shields.io/badge/Docker-Ready-blue.svg)](https://hub.docker.com/r/sl1zn1t3ldev/crypto-bot)
 
 ---
 
 ## 📖 Описание
 
-**Crypto Key Generator Bot** — это Telegram-бот для криптографических операций, разработанный для автоматизации задач безопасности и управления ключами. Бот предоставляет полный набор инструментов для работы с SSH-доступом и криптографическими хешами, обеспечивая удобство использования и высокий уровень безопасности.
+**Crypto Key Generator Bot** — Telegram-бот для криптографических операций: генерация SSH-ключей, экспорт их на серверы, вычисление хешей и работа с X.509-сертификатами.
 
 ### Основные возможности
 
 #### 🔑 SSH-менеджмент
-- **Генерация ключей**: RSA (4096 бит), Ed25519 с поддержкой passphrase
-- **Автоматический экспорт**: SSH-подключение с 2FA, добавление в `authorized_keys`
-- **Безопасность**: Автоматическое удаление паролей, проверка дубликатов
+- **Генерация ключей**: RSA 4096, Ed25519, с поддержкой passphrase
+- **Форматы**: OpenSSH и PKCS#8
+- **Проверка ключей**: тип, размер, комментарий, отпечатки SHA256 и MD5
+- **Экспорт на сервер**: 2FA, подтверждение отпечатка хоста, запись в `authorized_keys` с правами 700/600
 
-#### 🔐 Хеширование
+#### #️⃣ Хеширование
 - **Алгоритмы**: MD5, SHA-1, SHA-256, SHA-512, BLAKE2b
-- **Входные данные**: Текст, файлы до 50 МБ
-- **Вывод**: Hex-строки с метаданными (размер, время)
+- **Входные данные**: текст, файлы до 20 МБ
+- **Вывод**: hex в нижнем регистре
+
+#### 🪪 X.509
+- **Документы**: самоподписанные сертификаты и запросы CSR
+- **Ключ**: RSA 3072, подпись SHA-256, шифрование passphrase
+- **Расширения**: SAN, Key Usage, Extended Key Usage
 
 #### 🛡️ Безопасность
-- **FSM-состояния**: Изоляция пользовательских сессий
-- **Временное хранение**: MemoryStorage с автоматической очисткой
-- **Удаление sensitive данных**: Пароли и ключи удаляются из чата
-- **Валидация**: Проверка форматов ключей и серверов
+- Приватные ключи и пароли не сохраняются на сервере
+- Сообщения с паролями и passphrase удаляются из чата
+- Работа только в личных сообщениях
+- Подключения разрешены только на публичные IP
+- Квоты на подключения: на пользователя и суммарно по боту
+- Контейнер от непривилегированного пользователя, `read_only`, `cap_drop: ALL`
 
 ---
 
-## 🎯 Назначение
-
-Бот предназначен для:
-
-- **DevOps-инженеров**: Быстрая настройка SSH-доступа к серверам
-- **Системных администраторов**: Массовое развертывание ключей
-- **Разработчиков**: Генерация ключей для CI/CD пайплайнов
-- **Безопасности**: Проверка целостности файлов и ПО
-- **Образования**: Изучение криптографии через практику
-
----
-
-## 🏗️ Архитектура
-
-### Компоненты
-
-```
-┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
-│   Telegram API  │◄──►│   Aiogram 3.x    │◄──►│   FSM Storage   │
-│   (Webhooks)    │    │  (Async Router)  │    │  (Memory/Redis) │
-└─────────────────┘    └──────────────────┘    └─────────────────┘
-                                │
-                                ▼
-                       ┌─────────────────┐
-                       │   Crypto Core   │
-                       │  (SSH/Hashes)   │
-                       └─────────────────┘
-                                │
-                        ┌──────────────┐
-                        │  Security    │
-                        │  Middleware  │
-                        └──────────────┘
-```
-
-### Поток данных
-
-#### SSH-генерация
-```
-User Request → FSM State → Key Generation → File Export → FSM Storage
-    ↓              ↓            ↓              ↓             ↓
-Start     → choose_key_type → cryptography → BufferedInputFile → state.update_data()
-```
-
-#### Хеширование
-```
-User Input → Algorithm Selection → Hash Calculation → Result Display
-    ↓              ↓                   ↓                ↓
-Message/Document → hash_choose_algorithm → hashlib → Markdown Response
-```
-
-### Состояния FSM
-
-| Состояние | Описание | Переходы |
-|-----------|----------|----------|
-| `main_menu` | Главное меню | ssh_menu, hash_menu |
-| `ssh_menu` | SSH-меню | choose_ssh_key_type, ssh_get_existing_public_key |
-| `choose_ssh_key_type` | Выбор типа SSH-ключа | ssh_get_passphrase |
-| `ssh_get_passphrase` | Ввод passphrase | ssh_generate_key |
-| `ssh_get_existing_public_key` | Загрузка публичного ключа | ssh_get_server_info_for_existing |
-| `ssh_get_server_info` | Ввод данных сервера | ssh_wait_for_password |
-| `ssh_wait_for_password` | Ожидание пароля | ssh_handle_connection |
-| `ssh_wait_for_2fa` | Ожидание 2FA-кода | ssh_handle_connection |
-| `hash_menu` | Хеш-меню | hash_choose_algorithm |
-| `hash_choose_algorithm` | Выбор алгоритма | hash_get_input |
-| `hash_get_input` | Ожидание данных | hash_process_input |
-
----
-
-## 📦 Установка
-
-### Требования
+## 📦 Требования
 
 | Компонент | Версия | Описание |
 |-----------|--------|----------|
 | **Python** | 3.11+ | Основной язык |
 | **Aiogram** | 3.22.0 | Telegram Bot Framework |
-| **AsyncSSH** | 2.21.0 | SSH-клиент |
-| **Cryptography** | 46.0.1 | Криптография |
-| **Bcrypt** | 4.3.0 | Шифрование passphrase |
+| **AsyncSSH** | 2.21.1 | SSH-клиент |
+| **Cryptography** | 46.0.2 | Криптография |
+| **Bcrypt** | 5.0.0 | Шифрование passphrase |
+| **Redis** | 6.4.0 | Хранение квот и состояний |
 | **Python-dotenv** | 1.1.1 | Загрузка .env |
 
 ---
-### Установка через Docker(Рекомендуется)
+
+## 🐳 Установка через Docker (рекомендуется)
 
 #### Установить Docker
-Установите Docker, если он ещё не установлен.
 ```bash
 sudo curl -fsSL https://get.docker.com | sh
 ```
+
 #### Шаг 1. Загрузите необходимые файлы
-Создать каталог проекта:
 ```bash
 mkdir /opt/crypto-bot && cd /opt/crypto-bot
 ```
-
-Загрузите docker-compose.yml и .env с помощью следующих команд:
-
 ```bash
 curl -o docker-compose.yml https://raw.githubusercontent.com/SL1ZN1T3L/Crypto-Key-Generator/refs/heads/main/docker-compose.yml
 ```
 ```bash
 curl -o .env https://raw.githubusercontent.com/SL1ZN1T3L/Crypto-Key-Generator/refs/heads/main/.env.example
 ```
+
 #### Шаг 2. Настройте файл .env
-* Укажите в файле токен вашего бота
+Укажите токен вашего бота от [@BotFather](https://t.me/BotFather).
 
 #### Шаг 3. Запустите контейнеры
-Запустите контейнеры, выполнив следующую команду:
 ```bash
 docker compose up -d && docker compose logs -f -t
 ```
+
 ---
 
-### Установка через GitHub
+## 💻 Установка через GitHub
 
 ```bash
 git clone https://github.com/SL1ZN1T3L/Crypto-Key-Generator.git
-python -m venv venv
+cd Crypto-Key-Generator
+python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 mv .env.example .env
+python -m app
 ```
+
+---
+
+## ⚙️ Конфигурация
+
+### Основное
+
+| Переменная | По умолчанию | Описание |
+|-----------|--------------|----------|
+| `BOT_TOKEN` | — | Токен бота, обязательно |
+| `ALLOWED_USER_IDS` | — | Telegram ID через запятую, пусто — доступ открыт |
+| `SSH_EXPORT_ENABLED` | `1` | Экспорт ключей на серверы |
+| `REDIS_URL` | — | `redis://redis:6379/0` |
+| `LOG_LEVEL` | `INFO` | Уровень логирования |
+| `LOG_TO_FILE` | `0` | Дублировать логи в файл |
+
+### Криптография
+
+| Переменная | По умолчанию | Описание |
+|-----------|--------------|----------|
+| `RSA_SSH_KEY_SIZE` | `4096` | Размер RSA для SSH |
+| `RSA_X509_KEY_SIZE` | `3072` | Размер RSA для сертификатов |
+| `MAX_FILE_SIZE_MB` | `20` | Лимит файла для хеширования |
+
+### Сеть и лимиты
+
+| Переменная | По умолчанию | Описание |
+|-----------|--------------|----------|
+| `ALLOW_PRIVATE_TARGETS` | `0` | Подключения в приватные сети |
+| `SSH_CONNECT_TIMEOUT` | `15` | Таймаут подключения, с |
+| `TWOFA_TIMEOUT` | `120` | Время на ввод 2FA, с |
+| `RATE_LIMIT_SECONDS` | `0.7` | Интервал между запросами |
+| `QUOTA_PROBE_USER_HOUR` | `15` | Обращений к серверам в час |
+| `QUOTA_PROBE_USER_DAY` | `40` | Обращений к серверам в сутки |
+| `QUOTA_PROBE_GLOBAL_HOUR` | `200` | То же, суммарно по боту |
+| `QUOTA_AUTH_USER_HOUR` | `10` | Подключений с паролем в час |
+| `QUOTA_AUTH_USER_DAY` | `25` | Подключений с паролем в сутки |
+| `QUOTA_AUTH_GLOBAL_HOUR` | `120` | То же, суммарно по боту |
+| `QUOTA_FAIL_USER_HOST` | `3` | Неудачных входов на один сервер |
+| `QUOTA_FAIL_USER_TOTAL` | `8` | Неудачных входов всего |
+| `QUOTA_DISTINCT_HOSTS_DAY` | `8` | Разных серверов в сутки |
+| `QUOTA_MAX_CONCURRENT_SSH` | `5` | Одновременных SSH-сессий |
+
+Полный список — в [`.env.example`](.env.example).
+
+---
+
+## 🎮 Команды
+
+| Команда | Описание |
+|---------|----------|
+| `/start` | Главное меню |
+| `/help` | Справка |
+| `/cancel` | Отменить операцию |
+
+---
+
+## 📚 Документация
+
+- [DEPLOY.md](DEPLOY.md) — сборка образа, публикация, CI
+- [SECURITY.md](SECURITY.md) — политика безопасности
+
+---
+
+## 📄 Лицензия
+
+MIT — см. [LICENSE](LICENSE).

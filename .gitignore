@@ -212,3 +212,8 @@ logs/bot.log
 LICENSE
 Untitled-1.txt
 /.vscode
+
+# Проект
+.env
+logs/
+*.local*
