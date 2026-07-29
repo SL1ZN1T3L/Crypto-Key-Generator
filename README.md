@@ -151,13 +151,6 @@ python -m app
 
 ---
 
-## 📚 Документация
-
-- [DEPLOY.md](DEPLOY.md) — сборка образа, публикация, CI
-- [SECURITY.md](SECURITY.md) — политика безопасности
-
----
-
 ## 📄 Лицензия
 
 MIT — см. [LICENSE](LICENSE).
